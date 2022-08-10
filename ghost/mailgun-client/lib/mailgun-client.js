@@ -1,7 +1,8 @@
 const _ = require('lodash');
 const debug = require('@tryghost/debug');
 const logging = require('@tryghost/logging');
-const mailgun = require('mailgun-js');
+const formData = require('form-data');
+const Mailgun = require('mailgun.js');
 
 module.exports.BATCH_SIZE = 1000;
 
@@ -30,7 +31,7 @@ module.exports = class MailgunClient {
      *     }
      * }
      */
-    send(message, recipientData, replacements) {
+    async send(message, recipientData, replacements) {
         const mailgunInstance = this.getInstance();
         if (!mailgunInstance) {
             logging.warn(`Mailgun is not configured`);
@@ -62,7 +63,7 @@ module.exports = class MailgunClient {
                 subject: messageContent.subject,
                 html: messageContent.html,
                 text: messageContent.plaintext,
-                'recipient-variables': recipientData
+                'recipient-variables': JSON.stringify(recipientData)
             };
 
             // add a reference to the original email record for easier mapping of mailgun event -> email
@@ -85,17 +86,12 @@ module.exports = class MailgunClient {
                 messageData['o:tracking-opens'] = true;
             }
 
-            return new Promise((resolve, reject) => {
-                mailgunInstance.messages().send(messageData, (error, body) => {
-                    if (error || !body) {
-                        return reject(error);
-                    }
+            const mailgunConfig = this.#getConfig();
+            const response = await mailgunInstance.messages.create(mailgunConfig.domain, messageData);
 
-                    return resolve({
-                        id: body.id
-                    });
-                });
-            });
+            return {
+                id: response.id
+            };
         } catch (error) {
             return Promise.reject({error, messageData});
         }
@@ -111,7 +107,8 @@ module.exports = class MailgunClient {
         }
 
         debug(`fetchEvents: starting fetching first events page`);
-        let page = await mailgunInstance.events().get(mailgunOptions);
+        const mailgunConfig = this.#getConfig();
+        let page = await mailgunInstance.events.get(mailgunConfig.domain, mailgunOptions);
         let events = page?.items?.map(this.normalizeEvent) || [];
         debug(`fetchEvents: finished fetching first page with ${events.length} events`);
 
@@ -128,9 +125,12 @@ module.exports = class MailgunClient {
                 break pagesLoop;
             }
 
-            const nextPageUrl = page.paging.next.replace(/https:\/\/api\.(eu\.)?mailgun\.net\/v3/, '');
-            debug(`fetchEvents: starting fetching next page ${nextPageUrl}`);
-            page = await mailgunInstance.get(nextPageUrl);
+            const nextPageId = page.pages.next.page;
+            debug(`fetchEvents: starting fetching next page ${nextPageId}`);
+            page = await mailgunInstance.events.get(mailgunConfig.domain, {
+                page: nextPageId,
+                ...mailgunOptions
+            });
             events = page?.items?.map(this.normalizeEvent) || [];
             debug(`fetchEvents: finished fetching next page with ${events.length} events`);
         }
@@ -179,7 +179,7 @@ module.exports = class MailgunClient {
      * Note: if the credentials are not configure, this method returns `null` and it is down to the
      * consumer to act upon this/log this out
      *
-     * @returns {import('mailgun-js').Mailgun} the Mailgun client instance
+     * @returns {import('mailgun.js')} the Mailgun client instance
      */
     getInstance() {
         const mailgunConfig = this.#getConfig();
@@ -188,15 +188,12 @@ module.exports = class MailgunClient {
         }
 
         const baseUrl = new URL(mailgunConfig.baseUrl);
+        const mailgun = new Mailgun(formData);
 
-        return mailgun({
-            apiKey: mailgunConfig.apiKey,
-            domain: mailgunConfig.domain,
-            protocol: baseUrl.protocol,
-            host: baseUrl.hostname,
-            port: baseUrl.port,
-            endpoint: baseUrl.pathname,
-            retry: 5
+        return mailgun.client({
+            username: 'api',
+            key: mailgunConfig.apiKey,
+            url: baseUrl.origin
         });
     }
 
