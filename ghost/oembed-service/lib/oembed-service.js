@@ -5,6 +5,10 @@ const {extract, hasProvider} = require('oembed-parser');
 const cheerio = require('cheerio');
 const _ = require('lodash');
 const {CookieJar} = require('tough-cookie');
+const charsetParser = require('charset-parser');
+const iconv = require('iconv-lite');
+const Buffer = require('buffer').Buffer;
+
 
 const messages = {
     noUrlProvided: 'No url provided.',
@@ -129,6 +133,8 @@ class OEmbed {
         const response = await this.externalRequest(url, {cookieJar});
 
         const html = response.body;
+        const charset = this.getCharset(response);
+
         try {
             scraperResponse = await metascraper({html, url});
         } catch (err) {
@@ -152,11 +158,13 @@ class OEmbed {
             });
         }
 
+        const processedMetadata = this.convertMetadataToUtf8(metadata, charset);
+
         return {
             version: '1.0',
             type: 'bookmark',
             url,
-            metadata
+            metadata: processedMetadata
         };
     }
 
@@ -338,6 +346,50 @@ class OEmbed {
             // default to unknown provider to avoid leaking any app specifics
             return this.unknownProvider(url);
         }
+    }
+
+    /**
+     * @param {any} response
+     *
+     * @returns {string}
+     */
+    getCharset({headers, body}) {
+        let processedHeaders = {};
+        _.map(headers, (value, key) => {
+            processedHeaders[_.toLower(key)] = value;
+        });
+
+        let charset = charsetParser('Content-Type:' + processedHeaders['content-type'], body, 'utf-8');
+        return charset;
+    }
+
+    convertMetadataToUtf8(metadata, charset) {
+        if (_.lowerCase(charset) !== 'utf-8') {
+            charset = this.charsetSubstitution(charset);
+            metadata.title = iconv.decode(Buffer.from(metadata.title), charset).toString();
+            if (metadata.description) {
+                metadata.description = iconv.decode(Buffer.from(metadata.description), charset);
+            }
+            if (metadata.author) {
+                metadata.author = iconv.decode(Buffer.from(metadata.author), charset);
+            }
+            if (metadata.publisher) {
+                metadata.publisher = iconv.decode(Buffer.from(metadata.publisher), charset);
+            }
+        }
+
+        return metadata;
+    }
+
+    charsetSubstitution(charset) {
+        const substitution = {
+            //
+        };
+        if (substitution[charset]) {
+            return substitution[charset];
+        }
+
+        return charset;
     }
 }
 
